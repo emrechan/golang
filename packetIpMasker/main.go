@@ -24,7 +24,6 @@ var (
 	ipList      = make(map[string]net.IP, 1)
 	buffer      gopacket.SerializeBuffer
 	options     gopacket.SerializeOptions
-	usage       = `usage: ./packetIpParser -i <input.pcap> -o <output.pcap>`
 )
 
 // config.json structure
@@ -54,7 +53,7 @@ func isIPInIPList(currentIP net.IP, ipList map[string]net.IP) bool {
 	return false
 }
 
-func createNewPacket(
+func createNewTCPPacket(
 	ethernetLayer *layers.Ethernet,
 	ipv4Layer *layers.IPv4,
 	tcpLayer *layers.TCP,
@@ -81,6 +80,33 @@ func createNewPacket(
 	return err
 }
 
+func createNewUDPPacket(
+	ethernetLayer *layers.Ethernet,
+	ipv4Layer *layers.IPv4,
+	udpLayer *layers.UDP,
+	payload []byte,
+) error {
+	// This is needed to recalculate the checksum
+	// of the new packet
+	udpLayer.SetNetworkLayerForChecksum(ipv4Layer)
+
+	if isIPInIPList(ipv4Layer.SrcIP, ipList) {
+		ipv4Layer.SrcIP = ipList[ipv4Layer.SrcIP.String()]
+
+	}
+	if isIPInIPList(ipv4Layer.DstIP, ipList) {
+		ipv4Layer.DstIP = ipList[ipv4Layer.DstIP.String()]
+	}
+
+	err = gopacket.SerializeLayers(buffer, options,
+		ethernetLayer,
+		ipv4Layer,
+		udpLayer,
+		gopacket.Payload(payload))
+
+	return err
+}
+
 func main() {
 	inputFile := flag.String("i", "", "input file")
 	outputFile := flag.String("o", "", "output file")
@@ -91,7 +117,7 @@ func main() {
 	flag.Parse()
 
 	if *inputFile == "" || *outputFile == "" {
-		fmt.Println(usage)
+		flag.Usage()
 		os.Exit(1)
 	}
 
@@ -147,18 +173,18 @@ func printPacketInfo(packet gopacket.Packet, w *pcapgo.Writer) {
 		// Let's see if the packet is IP (even though the ether type told us)
 		ipLayer := packet.Layer(layers.LayerTypeIPv4)
 		if ipLayer != nil {
+			var p []byte
+			// If packet contains any payload get it
+			// Otherwise payload is nil
+			if applicationLayer := packet.ApplicationLayer(); applicationLayer != nil {
+				p = applicationLayer.Payload()
+			}
+
 			tcpLayer := packet.Layer(layers.LayerTypeTCP)
 			if tcpLayer != nil {
-				// Payload definitions
-				var p []byte
-				// If packet contains any payload get it
-				// Otherwise payload is nil
-				if applicationLayer := packet.ApplicationLayer(); applicationLayer != nil {
-					p = applicationLayer.Payload()
-				}
 				// Create a new packet using the decoded packet
 				// Do not write to output file if there is any error
-				if err = createNewPacket(ethernetLayer.(*layers.Ethernet), ipLayer.(*layers.IPv4), tcpLayer.(*layers.TCP), p); err != nil {
+				if err = createNewTCPPacket(ethernetLayer.(*layers.Ethernet), ipLayer.(*layers.IPv4), tcpLayer.(*layers.TCP), p); err != nil {
 					fmt.Println(err)
 					return
 				}
@@ -166,6 +192,22 @@ func printPacketInfo(packet gopacket.Packet, w *pcapgo.Writer) {
 				// captured packet
 				if err = w.WritePacket(packet.Metadata().CaptureInfo, buffer.Bytes()); err != nil {
 					fmt.Println(err)
+				}
+				return
+			}
+
+			udpLayer := packet.Layer(layers.LayerTypeUDP)
+			if udpLayer != nil {
+				// Create a new packet using the decoded packet
+				// Do not write to output file if there is any error
+				if err = createNewUDPPacket(ethernetLayer.(*layers.Ethernet), ipLayer.(*layers.IPv4), udpLayer.(*layers.UDP), p); err != nil {
+					fmt.Println(err)
+					return
+				}
+				// Write the new packet with the metadata of the
+				// captured packet
+				if err = w.WritePacket(packet.Metadata().CaptureInfo, buffer.Bytes()); err != nil {
+					fmt.Println(err, packet)
 				}
 			}
 		}
