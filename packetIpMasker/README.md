@@ -4,4 +4,4 @@ This tool masks the IP addresses in a pcap file according a given ***config.json
 
 # USAGE
 
-`./packetIpMasker -i input_file -i output_file -f [filter_string]`
+`./packetIpMasker -i input_file -o output_file -f [filter_string]`
